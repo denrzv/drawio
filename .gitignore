@@ -5,10 +5,9 @@ diagrams/*
 *.drawio
 *.xml
 .DS_Store
-.gitignore
 *.dsl
 .structurizr/*
 *.yml
 *.png
-.gitignore
-.DS_Store
+__pycache__/
+*.py[cod]
