@@ -8,24 +8,19 @@ This is a Python utility for processing C4 architecture diagrams created in draw
 
 ## Installation
 
-```bash
-pip3 install xlsxwriter
-```
-
-No other external dependencies beyond Python 3 standard library.
+No external dependencies. Requires Python 3 standard library only.
 
 ## Running the Parser
 
 ```bash
-python3 drawio_parser.py -i <inputfile.drawio> -o <outputfile.xlsx> [-d] [-s]
+python3 drawio_parser.py -i <inputfile.drawio> [-d] [-s]
 ```
 
 - `-i` — input draw.io file (required; supports both compressed and uncompressed XML formats)
-- `-o` — output XLSX file (optional)
 - `-d` — enable data syntax validation for relation descriptions
 - `-s` — print statistics (component/relation counts)
 
-DSL output is always written to `workspace.dsl` in the current directory when the parser runs.
+DSL output is always written to `workspace.dsl` in the current directory.
 
 ## Code Architecture
 
@@ -77,6 +72,5 @@ Standalone diagnostic script that reads uncompressed draw.io XML and prints raw 
 ## File I/O Conventions
 
 - Input: `.drawio` files (gitignored).
-- XLSX output: gitignored (`*.xlsx`, `*.xls`).
 - DSL output: `workspace.dsl` (gitignored).
 - Diagram and output files are excluded from git; only source code is tracked.

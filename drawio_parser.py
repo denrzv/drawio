@@ -1,18 +1,12 @@
 # drawio decoder
-from select import select
-from tkinter import N
 import xml.etree.ElementTree as ET
 import re
 import base64
 import zlib
 from urllib.parse import quote, unquote
 
-
 # args
 import sys, getopt
-
-# xls
-import xlsxwriter
 
 def js_encode_uri_component(data):
     return quote(data, safe='~()*!.\'')
@@ -101,80 +95,39 @@ class Element (Object):
             return True
         return False
 
-# function that export to xls
-def export_to_xls(outputfile,components,relations):
-    workbook = xlsxwriter.Workbook(outputfile)
-
-    worksheet_components = workbook.add_worksheet("Components")
-    component_attribute_map = {}
-    i = 0
-    for comp in components.values():
-        for key in comp.__dict__.keys():
-            if key not in component_attribute_map:
-                if key not in ['left_top', 'right_bottom']:
-                    component_attribute_map[key] = i
-                    worksheet_components.write(0,i,key)
-                    i = i +1
-
-    j = 1
-    for component in components.values():
-        for key in component.__dict__.keys():
-                if key in component_attribute_map:
-                    worksheet_components.write(j,component_attribute_map[key],component.__dict__[key])
-        j = j + 1
-
-
-    worksheet_relations = workbook.add_worksheet("Relations")
-    relation_attribute_map = {}
-    i = 0
-    for rel in relations:
-        for key in rel.__dict__.keys():
-            if key not in relation_attribute_map:
-                if key not in ['source_point','target_point']:
-                    relation_attribute_map[key] = i
-                    worksheet_relations.write(0,i,key)
-                    i = i +1
-
-    j = 1
-    for rel in relations:
-        for key in rel.__dict__.keys():
-            if key in relation_attribute_map:
-                worksheet_relations.write(j,relation_attribute_map[key],rel.__dict__[key])
-        j = j + 1
-
-    workbook.close()
-
 # function that export to Structurizr DSL
 
-symbols = [u"абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ abvgdeejzijklmnoprstufhzcss_y_euaABVGDEEJZIJKLMNOPRSTUFHZCSS_Y_EUA_",
-           u"abvgdeejzijklmnoprstufhzcss_y_euaABVGDEEJZIJKLMNOPRSTUFHZCSS_Y_EUA_abvgdeejzijklmnoprstufhzcss_y_euaABVGDEEJZIJKLMNOPRSTUFHZCSS_Y_EUA_"]
+_SYMBOLS_FROM = u"абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ abvgdeejzijklmnoprstufhzcss_y_euaABVGDEEJZIJKLMNOPRSTUFHZCSS_Y_EUA_"
+_SYMBOLS_TO   = u"abvgdeejzijklmnoprstufhzcss_y_euaABVGDEEJZIJKLMNOPRSTUFHZCSS_Y_EUA_abvgdeejzijklmnoprstufhzcss_y_euaABVGDEEJZIJKLMNOPRSTUFHZCSS_Y_EUA_"
+_TRANS_MAP = {_SYMBOLS_FROM[i]: _SYMBOLS_TO[i] for i in range(len(_SYMBOLS_FROM))}
 
-def create_var_name(name,dubles,deep):
-    prefix = 'var'
-    if deep == 1 : prefix = 'system_'
-    elif deep == 2: prefix = 'container_'
-    elif deep == 3: prefix = 'component_'
-
-    #name = prefix+str(len(names))
-
-    res = ""
+def create_var_name(name, dubles, deep):
     src = name.lower()
+    parts = []
     for c in src:
-        for i in range(len(symbols[0])):
-            if c == symbols[0][i]:
-                res += symbols[1][i]
-                break
-    
+        if c in _TRANS_MAP:
+            parts.append(_TRANS_MAP[c])
+        elif c.isalnum():
+            parts.append(c)
+        else:
+            parts.append('_')
+    res = re.sub(r'_+', '_', ''.join(parts)).strip('_')
+    if not res:
+        res = 'var'
+
     if res in dubles:
-        new_res = res+str(len(dubles[res]))
-        dubles[res].append(res)
+        new_res = res + str(len(dubles[res]))
+        dubles[res].append(new_res)
         res = new_res
     else:
         dubles[res] = [res]
 
     return res
 
-def recurse_walk(components,relations,file,component,deep,names,visible_names,dubles):
+def recurse_walk(components, children_map, relations, file, component, deep, names, visible_names, dubles, visited):
+    if component.id in visited:
+        return
+    visited.add(component.id)
     child_count = 0
 
     id   = component.id
@@ -189,85 +142,79 @@ def recurse_walk(components,relations,file,component,deep,names,visible_names,du
     else:
         visible_names[name] = list()
 
-    var_name = create_var_name(name,dubles,deep)
+    var_name = create_var_name(name, dubles, deep)
     var_type = 'system'
 
     if 'c4Type' in component.__dict__:
         if component.c4Type != None:
             var_type = component.c4Type
 
+    indent = '    ' * deep
     if deep == 1:
         if var_type == 'Person':
-            file.write('    '+var_name+' = Person "'+name +'" {\n')
-        else: 
-            file.write('    '+var_name+' = softwareSystem "'+name +'" {\n')
-            if hasattr(component,'cmdb'):
-                file.write("        properties {\n")
-                file.write(f"           cmdb {component.cmdb}\n")
-                file.write("        }\n")
+            file.write(indent + var_name + ' = Person "' + name + '" {\n')
+        else:
+            file.write(indent + var_name + ' = softwareSystem "' + name + '" {\n')
+            if hasattr(component, 'cmdb'):
+                file.write(indent + '    properties {\n')
+                file.write(indent + '        cmdb ' + component.cmdb + '\n')
+                file.write(indent + '    }\n')
     elif deep == 2:
-        file.write('        '+var_name+' = container "'+name +'" {\n')
+        file.write(indent + var_name + ' = container "' + name + '" {\n')
     elif deep == 3:
-        file.write('            '+var_name+' = component "'+name +'" {\n')
+        file.write(indent + var_name + ' = component "' + name + '" {\n')
 
-    if 'c4Description' in component.__dict__:
-        if component.c4Description != None:
-            for i in range(deep):
-                file.write('    ')
-            file.write('description "'+component.c4Description.replace("\n"," ")+'"\n')
+    if 'c4Description' in component.__dict__ and component.c4Description is not None:
+        file.write(indent + '    description "' + component.c4Description.replace("\n", " ") + '"\n')
 
-    if 'c4Technology' in component.__dict__:
-        if component.c4Technology != None:
-            for i in range(deep):
-                file.write('    ')
-            file.write('technology "'+component.c4Technology.replace("\n"," ")+'"\n')
+    if 'c4Technology' in component.__dict__ and component.c4Technology is not None:
+        file.write(indent + '    technology "' + component.c4Technology.replace("\n", " ") + '"\n')
 
-    for comp in components.values():
-        if comp.parent_id==id:
-            recurse_walk(components,relations,file,comp,deep+1,names,visible_names,dubles)
-            child_count += 1
+    for comp in children_map.get(id, []):
+        recurse_walk(components, children_map, relations, file, comp, deep + 1, names, visible_names, dubles, visited)
+        child_count += 1
 
-    names.append([var_name,deep,child_count,id])
+    names.append([var_name, deep, child_count, id])
 
-    if deep == 1:
-        file.write('    }\n')
-    elif deep == 2:
-        file.write('        }\n')
-    elif deep == 3:
-        file.write('            }\n')
+    file.write(indent + '}\n')
 
 
 
-def export_to_dsl(components,relations):
-    
-    with open("workspace.dsl","w") as file:
+def export_to_dsl(components, relations):
+
+    with open("workspace.dsl", "w") as file:
         file.write("workspace {\n")
         file.write("model {\n")
         names = list()
         visible_names = dict()
-
-        i = 1
         dubles = dict()
+
+        children_map = {}
         for comp in components.values():
-            if 'parent_id' in comp.__dict__.keys() and comp.parent_id!=None:
-                # do nothing
-                i = i+1  
-            else:
-                recurse_walk(components,relations,file,comp,1,names,visible_names,dubles)
+            pid = comp.parent_id
+            children_map.setdefault(pid, []).append(comp)
 
-        elements = dict()
-        for n in names:
-            elements[n[3]] = n
+        visited = set()
+        for comp in components.values():
+            if comp.parent_id is None:
+                recurse_walk(components, children_map, relations, file, comp, 1,
+                             names, visible_names, dubles, visited)
 
-        rel_names = dict()
+        elements = {n[3]: n for n in names}
+
         for rel in relations:
-            rel_name = rel.c4Description.replace("\n"," ")
-            if(len(rel_name) == 0):
+            if rel.source not in elements or rel.target not in elements:
+                rel_name = getattr(rel, 'c4Description', '').replace("\n", " ") or rel.id
+                print(f'Предупреждение: пропуск связи "{rel_name}" — компонент не найден в модели')
+                continue
+            rel_name = getattr(rel, 'c4Description', '').replace("\n", " ")
+            if not rel_name:
                 rel_name = 'Вызов'
-            rel_technology = rel.c4Technology.replace("\n"," ")
-            if(len(rel_technology) == 0):
+            rel_technology = getattr(rel, 'c4Technology', '').replace("\n", " ")
+            if not rel_technology:
                 rel_technology = 'unknown'
-            file.write("    "+elements[rel.source][0]+" -> "+elements[rel.target][0]+" \""+rel_name+"\" \""+rel_technology+"\"\n")
+            file.write("    " + elements[rel.source][0] + " -> " +
+                        elements[rel.target][0] + ' "' + rel_name + '" "' + rel_technology + '"\n')
 
         file.write("}\n")
         file.write("views {\n")
@@ -416,13 +363,14 @@ def load_from_xml(filename,print_statistics):
                             labels[d.attrib['parent']] = d.attrib['value']
 
         # parse technology from non c4-relations labels
-        for label in labels.keys():
-            parents = [x for x in broken_relations if x.id == label]
-            if len(parents) > 0:   
-                parents[0].c4Description = labels[label]
-                m = re.search(r'\[(.*)\]', labels[label])
+        broken_relations_by_id = {br.id: br for br in broken_relations}
+        for label_id, label_value in labels.items():
+            br = broken_relations_by_id.get(label_id)
+            if br is not None:
+                br.c4Description = label_value
+                m = re.search(r'\[(.*)\]', label_value)
                 if m:
-                    parents[0].c4Technology = m.group(1)
+                    br.c4Technology = m.group(1)
 
     if print_statistics==True:
         print('Number of components: ' + str(len(components)))
@@ -531,27 +479,39 @@ def check_relations(components, relations,i,check_data):
 def fill_parent_id(components):
     result = {}
     for comp in components.values():
+        best_parent_id = None
+        best_area = float('inf')
         for parent in components.values():
-            if comp != parent:
-                if comp.is_element_inside(parent):
-                    comp.parent_id = parent.id
+            if comp is parent:
+                continue
+            if comp.is_element_inside(parent):
+                w = parent.right_bottom[0] - parent.left_top[0]
+                h = parent.right_bottom[1] - parent.left_top[1]
+                area = w * h
+                if area < best_area:
+                    best_area = area
+                    best_parent_id = parent.id
+        comp.parent_id = best_parent_id
         result[comp.id] = comp
     return result
 
 # function that checks inpound and outbound relations
-# if comonent is habe parent component, than parent must have inbound or outbound relation
-def check_inbound_outbound_relations(comp,components,relations):
-    if not [x for x in relations if x.target == comp.id or x.source == comp.id]:
-        if comp.parent_id is not None:
-            return check_inbound_outbound_relations(components[comp.parent_id],components,relations)
-        else:
-            return False
-    else:
+# if component has a parent, the parent must have inbound or outbound relation
+def check_inbound_outbound_relations(comp, components, connected_ids):
+    if comp.id in connected_ids:
         return True
+    if comp.parent_id is not None and comp.parent_id in components:
+        return check_inbound_outbound_relations(components[comp.parent_id], components, connected_ids)
+    return False
 
 
 # function that checks components
 def check_components(components, relations, i):
+    connected_ids = set()
+    for rel in relations:
+        connected_ids.add(rel.source)
+        connected_ids.add(rel.target)
+
     for comp in components.values():
         if 'c4Description' not in comp.__dict__:
             if comp.c4Type != 'SystemScopeBoundary' and comp.c4Type != 'ContainerScopeBoundary' and comp.c4Type != 'Person':
@@ -561,68 +521,50 @@ def check_components(components, relations, i):
             if(comp.c4Type != 'Software System') and (comp.c4Type != 'Person') and (comp.c4Type != 'SystemScopeBoundary') and (comp.c4Type != 'ContainerScopeBoundary'):
                 print(f'{i}. {comp.c4Type} "{comp.c4Name}" не указана технология')
                 i = i + 1
-        
+
         if comp.c4Type != 'SystemScopeBoundary' and comp.c4Type != 'Person' and comp.c4Type != 'ContainerScopeBoundary':
-            if check_inbound_outbound_relations(comp,components,relations) is False:
+            if check_inbound_outbound_relations(comp, components, connected_ids) is False:
                 print(f'{i}. {comp.c4Type} "{comp.c4Name}" не имеет входящих и исходящих связей')
                 i = i + 1
     return i
 
 # main function
 def main(argv):
-    # parse args
     inputfile = ''
-    outputfile = ''
     check_data = False
     print_statistics = False
 
-    helpstring = 'drawio_parser.py -i <inputfile> -o <outputfile> -d -s'
+    helpstring = 'drawio_parser.py -i <inputfile> [-d] [-s]'
     try:
-        opts, args = getopt.getopt(argv,"sdhi:o:",["ifile=","ofile="])
+        opts, args = getopt.getopt(argv, "sdhi:", ["ifile="])
     except getopt.GetoptError:
-        print (helpstring)
+        print(helpstring)
         sys.exit(2)
     for opt, arg in opts:
         if opt == '-h':
-            print (helpstring)
+            print(helpstring)
             sys.exit()
         elif opt in ("-i", "--ifile"):
             inputfile = arg
-        elif opt in ("-o", "--ofile"):
-            outputfile = arg
         elif opt == '-d':
             check_data = True
         elif opt == '-s':
             print_statistics = True
 
     if len(inputfile) == 0:
-        print (helpstring)
+        print(helpstring)
         sys.exit()
 
-
-    # load from xml (.drawio)
-    components, relations , broken_relations = load_from_xml(inputfile,print_statistics)
-
-    # fill parent relations
+    components, relations, broken_relations = load_from_xml(inputfile, print_statistics)
     components = fill_parent_id(components)
-
-    # fix broken relations
     relations = fix_broken_relations(components, relations, broken_relations)
-
-
     relations = fix_missing_relations(components, relations)
-    # make checks
+
     i = 1
-    #i = print_broken_relations(broken_relations,i)
-    i = check_relations(components, relations, i,check_data)
+    i = check_relations(components, relations, i, check_data)
     i = check_components(components, relations, i)
 
-
-    # export to xls
-    if len(outputfile) != 0:
-        export_to_xls(outputfile,components,relations)
-    
-    export_to_dsl(components,relations)
+    export_to_dsl(components, relations)
 
 if __name__ == "__main__":
    main(sys.argv[1:])
