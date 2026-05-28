@@ -13,12 +13,13 @@ No external dependencies. Requires Python 3 standard library only.
 ## Running the Parser
 
 ```bash
-python3 drawio_parser.py -i <inputfile.drawio> [-d] [-s]
+python3 drawio_parser.py -i <inputfile.drawio> [-i <inputfile.drawio> ...] [-d] [-s] [-H]
 ```
 
-- `-i` — input draw.io file (required; supports both compressed and uncompressed XML formats)
+- `-i` — input draw.io file (required; supports both compressed and uncompressed XML formats). Can be repeated to merge several diagrams into one model.
 - `-d` — enable data syntax validation for relation descriptions
 - `-s` — print statistics (component/relation counts)
+- `-H`/`--hierarchical` — write hierarchical DSL output: `workspace.dsl` plus `relationships/*.dsl` and `views/*.dsl` files included from the workspace.
 
 DSL output is always written to `workspace.dsl` in the current directory.
 
@@ -32,7 +33,7 @@ DSL output is always written to `workspace.dsl` in the current directory.
 3. `fix_broken_relations()` — attempts to repair arrows that aren't connected to a component by matching their endpoint coordinates against component bounding boxes, picking the smallest enclosing component.
 4. `fix_missing_relations()` — drops any relation whose source or target no longer exists in the component dict.
 5. Validation: `check_relations()` and `check_components()` print numbered issues to stdout.
-6. Export: `export_to_xls()` and `export_to_dsl()`.
+6. Export: `export_to_dsl()` or, with `-H`, `export_to_hierarchical_dsl()`.
 
 ### Data model
 
@@ -53,6 +54,10 @@ draw.io element attributes that matter:
 ### DSL export (`export_to_dsl`)
 
 Walks the component hierarchy recursively (`recurse_walk`), emitting Structurizr DSL at depth 1 (softwareSystem/Person), 2 (container), 3 (component). Variable names are generated from the Russian/Latin `c4Name` via a transliteration table (`symbols` list); duplicates get a numeric suffix. Always outputs `workspace.dsl`.
+
+### Hierarchical DSL export (`export_to_hierarchical_dsl`)
+
+When `-H`/`--hierarchical` is set, the parser can merge repeated `-i` diagrams by component type/name, treating `SystemScopeBoundary` as the same logical software system as a `Software System` with the same name. It writes top-level systems and containers into `workspace.dsl`, system-level relationships into `relationships/system-context.dsl`, container/component relationships into `relationships/container-<system>.dsl`, and view definitions into `views/*.dsl`.
 
 ### `drawio_print.py`
 

@@ -28,7 +28,7 @@
 # Использование
 
 ```sh
-python3 drawio_parser.py -i <inputfile> [-d] [-s]
+python3 drawio_parser.py -i <inputfile> [-i <inputfile> ...] [-d] [-s] [-H]
 ```
 
 Пример для Ubuntu 22:
@@ -37,10 +37,12 @@ python3 drawio_parser.py -i <inputfile> [-d] [-s]
 python3 drawio_parser.py -i input.drawio -d -s
 ```
 
-inputfile - имя файла в формате drawio
+inputfile - имя файла в формате drawio. Можно указать несколько `-i`, чтобы объединить системный контекст и контейнерные диаграммы в одну модель.
 
 Результат всегда записывается в файл `workspace.dsl` в текущем каталоге.
 
 d - проверка синтаксиса входных и выходных данных
 
 s - печать статистики
+
+H - иерархический экспорт: дополнительно создаёт каталог `relationships/` со связями системного контекста и контейнерных диаграмм, а также каталог `views/` с DSL-файлами представлений. Основной `workspace.dsl` подключает эти файлы через `!include`.
