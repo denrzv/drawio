@@ -7,6 +7,7 @@ from urllib.parse import quote, unquote
 
 # args
 import sys, getopt
+from pathlib import Path
 
 def js_encode_uri_component(data):
     return quote(data, safe='~()*!.\'')
@@ -528,15 +529,221 @@ def check_components(components, relations, i):
                 i = i + 1
     return i
 
+
+def process_drawio_file(inputfile, print_statistics):
+    components, relations, broken_relations = load_from_xml(inputfile, print_statistics)
+    components = fill_parent_id(components)
+    relations = fix_broken_relations(components, relations, broken_relations)
+    relations = fix_missing_relations(components, relations)
+    return components, relations
+
+
+def normalized_component_type(component):
+    component_type = getattr(component, 'c4Type', '')
+    if component_type == 'SystemScopeBoundary':
+        return 'Software System'
+    if component_type == 'ContainerScopeBoundary':
+        return 'Container'
+    return component_type
+
+
+def component_merge_key(component):
+    return (
+        normalized_component_type(component),
+        getattr(component, 'c4Name', ''),
+    )
+
+
+def merge_component_attributes(target, source):
+    for key, value in source.__dict__.items():
+        if key in ('id', 'parent_id', 'left_top', 'right_bottom'):
+            continue
+        if not hasattr(target, key) or getattr(target, key) in (None, ''):
+            setattr(target, key, value)
+
+
+def merge_models(model_parts):
+    merged_components = {}
+    component_ids_by_key = {}
+    merged_relations = []
+    relation_keys = set()
+
+    for components, relations in model_parts:
+        id_map = {}
+
+        for component in components.values():
+            key = component_merge_key(component)
+            if key in component_ids_by_key:
+                canonical_id = component_ids_by_key[key]
+                merge_component_attributes(merged_components[canonical_id], component)
+            else:
+                canonical_id = component.id
+                component_ids_by_key[key] = canonical_id
+                merged_components[canonical_id] = component
+            id_map[component.id] = canonical_id
+
+        for component in components.values():
+            canonical_component = merged_components[id_map[component.id]]
+            if component.parent_id in id_map:
+                canonical_component.parent_id = id_map[component.parent_id]
+
+        for relation in relations:
+            if relation.source not in id_map or relation.target not in id_map:
+                continue
+            source = id_map[relation.source]
+            target = id_map[relation.target]
+            relation_key = (
+                source,
+                target,
+                getattr(relation, 'c4Description', ''),
+                getattr(relation, 'c4Technology', ''),
+            )
+            if relation_key in relation_keys:
+                continue
+            relation.source = source
+            relation.target = target
+            relation_keys.add(relation_key)
+            merged_relations.append(relation)
+
+    return merged_components, merged_relations
+
+
+def sanitize_file_name(name):
+    sanitized = create_var_name(name, {}, 0)
+    return sanitized or 'diagram'
+
+
+def relation_statement(elements, relation):
+    rel_name = getattr(relation, 'c4Description', '').replace("\n", " ")
+    if not rel_name:
+        rel_name = 'Вызов'
+    rel_technology = getattr(relation, 'c4Technology', '').replace("\n", " ")
+    if not rel_technology:
+        rel_technology = 'unknown'
+    return "    " + elements[relation.source][0] + " -> " + elements[relation.target][0] + ' "' + rel_name + '" "' + rel_technology + '"\n'
+
+
+def build_names(components, file):
+    names = list()
+    visible_names = dict()
+    dubles = dict()
+
+    children_map = {}
+    for comp in components.values():
+        pid = comp.parent_id
+        children_map.setdefault(pid, []).append(comp)
+
+    visited = set()
+    for comp in components.values():
+        if comp.parent_id is None:
+            recurse_walk(components, children_map, [], file, comp, 1,
+                         names, visible_names, dubles, visited)
+    return names
+
+
+def export_to_hierarchical_dsl(components, relations):
+    relationships_dir = Path('relationships')
+    views_dir = Path('views')
+    relationships_dir.mkdir(exist_ok=True)
+    views_dir.mkdir(exist_ok=True)
+    for output_dir in (relationships_dir, views_dir):
+        for old_file in output_dir.glob('*.dsl'):
+            old_file.unlink()
+
+    with open('workspace.dsl', 'w', encoding='utf-8') as file:
+        file.write('workspace {\n')
+        file.write('model {\n')
+        names = build_names(components, file)
+        elements = {n[3]: n for n in names}
+
+        system_relations = []
+        container_relations_by_system = {}
+        element_top_level = {}
+        for element_id, element in components.items():
+            current = element
+            while current.parent_id is not None and current.parent_id in components:
+                current = components[current.parent_id]
+            element_top_level[element_id] = current.id
+
+        for relation in relations:
+            if relation.source not in elements or relation.target not in elements:
+                rel_name = getattr(relation, 'c4Description', '').replace("\n", " ") or relation.id
+                print(f'Предупреждение: пропуск связи "{rel_name}" — компонент не найден в модели')
+                continue
+            source_depth = elements[relation.source][1]
+            target_depth = elements[relation.target][1]
+            if source_depth == 1 and target_depth == 1:
+                system_relations.append(relation)
+            else:
+                owner_id = element_top_level.get(relation.source)
+                if source_depth == 1:
+                    owner_id = element_top_level.get(relation.target)
+                container_relations_by_system.setdefault(owner_id, []).append(relation)
+
+        relationship_includes = []
+        if system_relations:
+            path = relationships_dir / 'system-context.dsl'
+            with path.open('w', encoding='utf-8') as rel_file:
+                for relation in system_relations:
+                    rel_file.write(relation_statement(elements, relation))
+            relationship_includes.append(path)
+
+        for owner_id, owner_relations in container_relations_by_system.items():
+            if owner_id not in elements:
+                continue
+            path = relationships_dir / f'container-{sanitize_file_name(elements[owner_id][0])}.dsl'
+            with path.open('w', encoding='utf-8') as rel_file:
+                for relation in owner_relations:
+                    rel_file.write(relation_statement(elements, relation))
+            relationship_includes.append(path)
+
+        for path in relationship_includes:
+            file.write(f'    !include {path.as_posix()}\n')
+
+        file.write('}\n')
+        file.write('views {\n')
+
+        system_landscape_path = views_dir / 'system-landscape.dsl'
+        with system_landscape_path.open('w', encoding='utf-8') as view_file:
+            view_file.write('    systemLandscape {\n')
+            view_file.write('        include *\n')
+            view_file.write('        autoLayout\n')
+            view_file.write('    }\n')
+        file.write(f'    !include {system_landscape_path.as_posix()}\n')
+
+        for n in names:
+            if n[2] > 0:
+                if n[1] == 1:
+                    path = views_dir / f'container-{sanitize_file_name(n[0])}.dsl'
+                    with path.open('w', encoding='utf-8') as view_file:
+                        view_file.write(f'    container {n[0]} {{\n')
+                        view_file.write('        include *\n')
+                        view_file.write('        autoLayout\n')
+                        view_file.write('    }\n')
+                    file.write(f'    !include {path.as_posix()}\n')
+                elif n[1] == 2:
+                    path = views_dir / f'component-{sanitize_file_name(n[0])}.dsl'
+                    with path.open('w', encoding='utf-8') as view_file:
+                        view_file.write(f'    component {n[0]} {{\n')
+                        view_file.write('        include *\n')
+                        view_file.write('        autoLayout\n')
+                        view_file.write('    }\n')
+                    file.write(f'    !include {path.as_posix()}\n')
+
+        file.write('    themes default\n')
+        file.write('    }\n')
+        file.write('}\n')
+
 # main function
 def main(argv):
-    inputfile = ''
+    inputfiles = []
     check_data = False
     print_statistics = False
+    hierarchical_output = False
 
-    helpstring = 'drawio_parser.py -i <inputfile> [-d] [-s]'
+    helpstring = 'drawio_parser.py -i <inputfile> [-i <inputfile> ...] [-d] [-s] [-H]'
     try:
-        opts, args = getopt.getopt(argv, "sdhi:", ["ifile="])
+        opts, args = getopt.getopt(argv, "sdhHi:", ["ifile=", "hierarchical"])
     except getopt.GetoptError:
         print(helpstring)
         sys.exit(2)
@@ -545,26 +752,32 @@ def main(argv):
             print(helpstring)
             sys.exit()
         elif opt in ("-i", "--ifile"):
-            inputfile = arg
+            inputfiles.append(arg)
         elif opt == '-d':
             check_data = True
         elif opt == '-s':
             print_statistics = True
+        elif opt in ('-H', '--hierarchical'):
+            hierarchical_output = True
 
-    if len(inputfile) == 0:
+    if len(inputfiles) == 0:
         print(helpstring)
         sys.exit()
 
-    components, relations, broken_relations = load_from_xml(inputfile, print_statistics)
-    components = fill_parent_id(components)
-    relations = fix_broken_relations(components, relations, broken_relations)
-    relations = fix_missing_relations(components, relations)
+    model_parts = [process_drawio_file(inputfile, print_statistics) for inputfile in inputfiles]
+    if len(model_parts) == 1:
+        components, relations = model_parts[0]
+    else:
+        components, relations = merge_models(model_parts)
 
     i = 1
     i = check_relations(components, relations, i, check_data)
     i = check_components(components, relations, i)
 
-    export_to_dsl(components, relations)
+    if hierarchical_output:
+        export_to_hierarchical_dsl(components, relations)
+    else:
+        export_to_dsl(components, relations)
 
 if __name__ == "__main__":
    main(sys.argv[1:])
