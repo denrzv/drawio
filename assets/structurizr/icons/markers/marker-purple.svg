@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="purple marker">
+  <path fill="#7b3fc7" d="M6 10 16 4l10 6-10 6z"/>
+  <path fill="#5c2f96" d="M6 10v12l10 6V16z"/>
+  <path fill="#9b6ee6" d="M26 10v12l-10 6V16z"/>
+  <path fill="none" stroke="#43226f" stroke-linejoin="round" stroke-width="1.5" d="M6 10 16 4l10 6v12l-10 6-10-6zM16 16v12M6 10l10 6 10-6"/>
+</svg>

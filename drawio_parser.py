@@ -3,11 +3,38 @@ import xml.etree.ElementTree as ET
 import re
 import base64
 import zlib
+import json
 from urllib.parse import quote, unquote
 
 # args
 import sys, getopt
 from pathlib import Path
+
+MARKER_TAGS = {
+    'green': 'Marker:Green',
+    'red': 'Marker:Red',
+    'blue': 'Marker:Blue',
+    'gray': 'Marker:Gray',
+    'purple': 'Marker:Purple',
+}
+
+MARKER_ICON_PATHS = {
+    'Marker:Green': './assets/structurizr/icons/markers/marker-green.svg',
+    'Marker:Red': './assets/structurizr/icons/markers/marker-red.svg',
+    'Marker:Blue': './assets/structurizr/icons/markers/marker-blue.svg',
+    'Marker:Gray': './assets/structurizr/icons/markers/marker-gray.svg',
+    'Marker:Purple': './assets/structurizr/icons/markers/marker-purple.svg',
+}
+
+DEFAULT_MARKER_MAPPING = {
+    'unchanged': 'Marker:Blue',
+    'changed': 'Marker:Green',
+    'created': 'Marker:Red',
+    'deprecated': 'Marker:Gray',
+    'special': 'Marker:Purple',
+    **MARKER_TAGS,
+}
+
 
 def js_encode_uri_component(data):
     return quote(data, safe='~()*!.\'')
@@ -42,11 +69,12 @@ def pako_inflate_raw(data):
 class Object:
     def __init__(self,attributes):
         self.id = None
+        self.attributes = dict(attributes)
         setattr(self, 'c4Name', '')
         for key in attributes.keys():
             if key == 'id':
                 self.id = attributes[key]
-            if key.startswith('c4'):
+            if key.startswith('c4') or key == 'tags':
                 setattr(self, key, attributes[key])
             if key.lower()=='cmdb':
                 setattr(self, 'cmdb', attributes[key])
@@ -125,6 +153,111 @@ def create_var_name(name, dubles, deep):
 
     return res
 
+
+def split_tags(tags):
+    if tags is None:
+        return []
+    if isinstance(tags, (list, tuple)):
+        values = tags
+    else:
+        values = re.split(r'[,;]', str(tags))
+    result = []
+    seen = set()
+    for tag in values:
+        normalized = str(tag).strip()
+        if normalized and normalized not in seen:
+            result.append(normalized)
+            seen.add(normalized)
+    return result
+
+
+def component_tags(component):
+    tags = []
+    for attr_name in ('c4Tags', 'tags'):
+        if hasattr(component, attr_name):
+            tags.extend(split_tags(getattr(component, attr_name)))
+    if hasattr(component, 'marker_tag'):
+        tags.append(component.marker_tag)
+
+    result = []
+    seen = set()
+    for tag in tags:
+        if tag not in seen:
+            result.append(tag)
+            seen.add(tag)
+    return result
+
+
+def write_tags(file, indent, tags):
+    if tags:
+        file.write(indent + '    tags "' + ','.join(tags) + '"\n')
+
+
+def normalize_marker_value(value):
+    return str(value).strip().lower()
+
+
+def marker_config(enabled=False, drawio_property_name='changeStatus', mapping=None):
+    return {
+        'enabled': enabled,
+        'drawioPropertyName': drawio_property_name,
+        'mapping': dict(mapping or DEFAULT_MARKER_MAPPING),
+    }
+
+
+def load_marker_config(config_file, enabled=False, drawio_property_name=None):
+    config = marker_config(enabled=enabled)
+    if config_file is not None:
+        with open(config_file, encoding='utf-8') as file:
+            data = json.load(file)
+        config['enabled'] = data.get('enabled', config['enabled'])
+        config['drawioPropertyName'] = data.get('drawioPropertyName', config['drawioPropertyName'])
+        if 'mapping' in data:
+            config['mapping'] = data['mapping']
+    if drawio_property_name is not None:
+        config['drawioPropertyName'] = drawio_property_name
+    return config
+
+
+def apply_marker_tags(components, config):
+    if not config or not config.get('enabled'):
+        return
+
+    property_name = config.get('drawioPropertyName', 'changeStatus')
+    mapping = {
+        normalize_marker_value(key): value
+        for key, value in config.get('mapping', {}).items()
+        if value in MARKER_ICON_PATHS
+    }
+
+    for component in components.values():
+        raw_value = component.attributes.get(property_name)
+        if raw_value is None:
+            continue
+        marker_tag = mapping.get(normalize_marker_value(raw_value))
+        if marker_tag is not None:
+            component.marker_tag = marker_tag
+
+
+def marker_tags_in_components(components):
+    tags = set()
+    for component in components.values():
+        tags.update(tag for tag in component_tags(component) if tag in MARKER_ICON_PATHS)
+    return tags
+
+
+def write_marker_styles(file, components):
+    tags = marker_tags_in_components(components)
+    if not tags:
+        return
+
+    file.write('    styles {\n')
+    for tag, icon_path in MARKER_ICON_PATHS.items():
+        file.write(f'        element "{tag}" {{\n')
+        file.write(f'            icon {icon_path}\n')
+        file.write('        }\n')
+    file.write('    }\n')
+
 def recurse_walk(components, children_map, relations, file, component, deep, names, visible_names, dubles, visited):
     if component.id in visited:
         return
@@ -170,6 +303,8 @@ def recurse_walk(components, children_map, relations, file, component, deep, nam
 
     if 'c4Technology' in component.__dict__ and component.c4Technology is not None:
         file.write(indent + '    technology "' + component.c4Technology.replace("\n", " ") + '"\n')
+
+    write_tags(file, indent, component_tags(component))
 
     for comp in children_map.get(id, []):
         recurse_walk(components, children_map, relations, file, comp, deep + 1, names, visible_names, dubles, visited)
@@ -239,6 +374,7 @@ def export_to_dsl(components, relations):
                     file.write("    }\n")
 
 
+        write_marker_styles(file, components)
         file.write("    themes default\n")
         file.write("    }\n")
         file.write("}\n")
@@ -530,8 +666,9 @@ def check_components(components, relations, i):
     return i
 
 
-def process_drawio_file(inputfile, print_statistics):
+def process_drawio_file(inputfile, print_statistics, markers=None):
     components, relations, broken_relations = load_from_xml(inputfile, print_statistics)
+    apply_marker_tags(components, markers)
     components = fill_parent_id(components)
     relations = fix_broken_relations(components, relations, broken_relations)
     relations = fix_missing_relations(components, relations)
@@ -805,6 +942,7 @@ def export_to_hierarchical_dsl(components, relations):
                         view_file.write('    }\n')
                     file.write(f'    !include {path.as_posix()}\n')
 
+        write_marker_styles(file, components)
         file.write('    themes default\n')
         file.write('    }\n')
         file.write('}\n')
@@ -815,10 +953,13 @@ def main(argv):
     check_data = False
     print_statistics = False
     hierarchical_output = False
+    markers_enabled = False
+    marker_config_file = None
+    marker_property = None
 
-    helpstring = 'drawio_parser.py -i <inputfile> [-i <inputfile> ...] [-d] [-s] [-H]'
+    helpstring = 'drawio_parser.py -i <inputfile> [-i <inputfile> ...] [-d] [-s] [-H] [--marker-tags] [--marker-tags-config <json>] [--marker-property <name>]'
     try:
-        opts, args = getopt.getopt(argv, "sdhHi:", ["ifile=", "hierarchical"])
+        opts, args = getopt.getopt(argv, "sdhHi:", ["ifile=", "hierarchical", "marker-tags", "marker-tags-config=", "marker-property="])
     except getopt.GetoptError:
         print(helpstring)
         sys.exit(2)
@@ -834,12 +975,19 @@ def main(argv):
             print_statistics = True
         elif opt in ('-H', '--hierarchical'):
             hierarchical_output = True
+        elif opt == '--marker-tags':
+            markers_enabled = True
+        elif opt == '--marker-tags-config':
+            marker_config_file = arg
+        elif opt == '--marker-property':
+            marker_property = arg
 
     if len(inputfiles) == 0:
         print(helpstring)
         sys.exit()
 
-    model_parts = [process_drawio_file(inputfile, print_statistics) for inputfile in inputfiles]
+    markers = load_marker_config(marker_config_file, markers_enabled, marker_property)
+    model_parts = [process_drawio_file(inputfile, print_statistics, markers) for inputfile in inputfiles]
     if len(model_parts) == 1:
         components, relations = model_parts[0]
     else:
