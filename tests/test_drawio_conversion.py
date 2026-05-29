@@ -53,6 +53,10 @@ class DrawioConversionTest(unittest.TestCase):
                     for expected_stat in case["stats"]:
                         self.assertIn(expected_stat, result.stdout)
 
+                    self.assertIn("Exported elements:", result.stdout)
+                    self.assertIn("Exported relationships:", result.stdout)
+                    self.assertIn("  - Software System: CRM", result.stdout)
+
                     generated_dsl = Path(output_dir, "workspace.dsl").read_text(encoding="utf-8")
                     expected_dsl = (EXPECTED_DIR / case["expected"]).read_text(encoding="utf-8")
                     self.assertEqual(expected_dsl, generated_dsl)
@@ -85,6 +89,15 @@ class DrawioConversionTest(unittest.TestCase):
                 "Number of relations: 4",
             ]:
                 self.assertIn(expected_stat, result.stdout)
+
+            for expected_summary_line in [
+                "Exported elements:",
+                "  - Software System: CRM",
+                "    - Container: agent-ui",
+                "Exported relationships:",
+                "  - Contact Center Agent -> CRM / agent-ui: Handles calls",
+            ]:
+                self.assertIn(expected_summary_line, result.stdout)
 
             expected_root = EXPECTED_DIR / "hierarchical"
             for expected_file in expected_root.rglob("*.dsl"):
