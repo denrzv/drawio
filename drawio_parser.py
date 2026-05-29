@@ -608,6 +608,81 @@ def merge_models(model_parts):
     return merged_components, merged_relations
 
 
+def component_display_name(component):
+    name = getattr(component, 'c4Name', '').replace("\n", " ").strip()
+    if name:
+        return name
+    return getattr(component, 'c4Type', 'Unnamed element').replace("\n", " ").strip() or 'Unnamed element'
+
+
+def exported_element_kind(component, depth):
+    component_type = getattr(component, 'c4Type', '')
+    if depth == 1:
+        if component_type == 'Person':
+            return 'Person'
+        return 'Software System'
+    if depth == 2:
+        return 'Container'
+    if depth == 3:
+        return 'Component'
+    return f'Nested Element (depth {depth})'
+
+
+def build_children_map(components):
+    children_map = {}
+    for comp in components.values():
+        children_map.setdefault(comp.parent_id, []).append(comp)
+    return children_map
+
+
+def print_export_summary(components, relations):
+    children_map = build_children_map(components)
+    visited = set()
+    element_paths = {}
+
+    print('Exported elements:')
+
+    def walk(component, depth, path):
+        if component.id in visited:
+            return
+        visited.add(component.id)
+        kind = exported_element_kind(component, depth)
+        name = component_display_name(component)
+        element_paths[component.id] = ' / '.join(path + [name])
+        indent = '  ' * depth
+        print(f'{indent}- {kind}: {name}')
+        for child in children_map.get(component.id, []):
+            walk(child, depth + 1, path + [name])
+
+    roots = children_map.get(None, [])
+    if roots:
+        for root in roots:
+            walk(root, 1, [])
+    else:
+        print('  (none)')
+
+    print('Exported relationships:')
+    if not relations:
+        print('  (none)')
+        return
+
+    for relation in relations:
+        source = element_paths.get(relation.source)
+        target = element_paths.get(relation.target)
+        if source is None and relation.source in components:
+            source = component_display_name(components[relation.source])
+        if target is None and relation.target in components:
+            target = component_display_name(components[relation.target])
+        source = source or relation.source or 'unknown source'
+        target = target or relation.target or 'unknown target'
+        description = getattr(relation, 'c4Description', '').replace("\n", " ").strip() or 'Вызов'
+        technology = getattr(relation, 'c4Technology', '').replace("\n", " ").strip()
+        if technology:
+            print(f'  - {source} -> {target}: {description} [{technology}]')
+        else:
+            print(f'  - {source} -> {target}: {description}')
+
+
 def sanitize_file_name(name):
     sanitized = create_var_name(name, {}, 0)
     return sanitized or 'diagram'
@@ -778,6 +853,8 @@ def main(argv):
         export_to_hierarchical_dsl(components, relations)
     else:
         export_to_dsl(components, relations)
+
+    print_export_summary(components, relations)
 
 if __name__ == "__main__":
    main(sys.argv[1:])
